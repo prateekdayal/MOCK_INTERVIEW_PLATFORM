@@ -1,5 +1,5 @@
 // frontend/src/components/InterviewComponent.jsx
-import React, { useState, useEffect, useRef } from 'react';
+import React, { useState, useEffect, useRef, useCallback } from 'react'; // Added useCallback
 import axios from 'axios';
 
 const InterviewComponent = ({ interviewSessionId, onInterviewComplete }) => {
@@ -8,12 +8,12 @@ const InterviewComponent = ({ interviewSessionId, onInterviewComplete }) => {
   const [userAnswer, setUserAnswer] = useState('');
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState(null);
-  const [isSubmitting, setIsSubmitting] = useState(false); // For final interview submission
+  const [isSubmitting, setIsSubmitting] = useState(false);
 
   // Timer states
-  const [timeLeft, setTimeLeft] = useState(60); // Default 60 seconds per question
-  const timerRef = useRef(null); // Ref for the interval ID
-  const isTransitioningRef = useRef(false); // New ref to prevent multiple auto-transitions
+  const [timeLeft, setTimeLeft] = useState(60);
+  const timerRef = useRef(null);
+  const isTransitioningRef = useRef(false);
 
   // Media recording states and refs
   const videoRef = useRef(null);
@@ -22,6 +22,19 @@ const InterviewComponent = ({ interviewSessionId, onInterviewComplete }) => {
   const [isRecording, setIsRecording] = useState(false);
   const [hasMediaAccess, setHasMediaAccess] = useState(false);
   const [recordedAudioBlob, setRecordedAudioBlob] = useState(null);
+
+  // --- NEW: Function to stop media streams ---
+  const stopMediaStream = useCallback(() => {
+    if (videoRef.current && videoRef.current.srcObject) {
+      const stream = videoRef.current.srcObject;
+      stream.getTracks().forEach(track => {
+        console.log(`DEBUG: Stopping media track: ${track.kind}`);
+        track.stop();
+      });
+      videoRef.current.srcObject = null; // Clear srcObject
+      console.log("DEBUG: Media stream explicitly stopped.");
+    }
+  }, []); // Memoize the function
 
   // --- Effect to get webcam/microphone access on component mount ---
   useEffect(() => {
@@ -40,17 +53,16 @@ const InterviewComponent = ({ interviewSessionId, onInterviewComplete }) => {
     };
     getMedia();
 
-    // Cleanup function to stop media stream when component unmounts
+    // Cleanup function: runs when component unmounts
     return () => {
-      if (videoRef.current && videoRef.current.srcObject) {
-        videoRef.current.srcObject.getTracks().forEach(track => track.stop());
-      }
+      console.log("DEBUG: InterviewComponent unmounting. Calling stopMediaStream from cleanup.");
+      stopMediaStream(); // Call the memoized cleanup function
       if (timerRef.current) {
         clearInterval(timerRef.current);
       }
-      isTransitioningRef.current = false; // Reset ref
+      isTransitioningRef.current = false;
     };
-  }, []);
+  }, [stopMediaStream]); // Add stopMediaStream to dependency array
 
   // --- Effect to fetch interview session details ---
   useEffect(() => {
@@ -61,8 +73,8 @@ const InterviewComponent = ({ interviewSessionId, onInterviewComplete }) => {
         if (response.data.generatedQuestions[0]) {
           setUserAnswer(response.data.generatedQuestions[0].userAnswer || '');
           setRecordedAudioBlob(null);
-          setTimeLeft(60); // Reset timer for first question
-          isTransitioningRef.current = false; // Reset ref for new session
+          setTimeLeft(60);
+          isTransitioningRef.current = false;
         }
       } catch (err) {
         console.error('Error fetching interview session:', err);
@@ -77,69 +89,59 @@ const InterviewComponent = ({ interviewSessionId, onInterviewComplete }) => {
 
   // --- Effect to manage the countdown timer and auto-advance ---
   useEffect(() => {
-    // Clear any existing timer
     if (timerRef.current) {
       clearInterval(timerRef.current);
     }
 
-    // Only start timer if interview is loaded, not submitting, and not already transitioning
     if (interview && currentQuestionIndex < interview.generatedQuestions.length && !isSubmitting && !isTransitioningRef.current) {
       timerRef.current = setInterval(() => {
         setTimeLeft(prevTime => {
           if (prevTime <= 1) {
             clearInterval(timerRef.current);
-            if (!isTransitioningRef.current) { // Ensure only one auto-transition
-                isTransitioningRef.current = true; // Set ref to block further transitions
-                console.log("Time's up! Triggering auto-save and advance/submit.");
-                handleTimeUp(); // Call handler for time up
+            if (!isTransitioningRef.current) {
+                isTransitioningRef.current = true;
+                console.log("DEBUG: Time's up! Triggering auto-save and advance/submit.");
+                handleTimeUp();
             }
             return 0;
           }
           return prevTime - 1;
         });
-      }, 1000); // Update every second
+      }, 1000);
     }
 
-    // Cleanup when component unmounts or question changes
     return () => {
       if (timerRef.current) {
         clearInterval(timerRef.current);
       }
     };
-  }, [currentQuestionIndex, interview, isSubmitting]); // Depend on relevant state
+  }, [currentQuestionIndex, interview, isSubmitting]);
 
   // Handler when time runs out
   const handleTimeUp = async () => {
-    // Stop recording if active
     if (isRecording) {
         stopRecording();
-        await new Promise(resolve => setTimeout(resolve, 500)); // Small delay for blob processing
+        await new Promise(resolve => setTimeout(resolve, 500));
     }
+    await saveCurrentAnswer();
 
-    // Save the current answer
-    await saveCurrentAnswer(); // saveCurrentAnswer also calls stopRecording internally
-
-    // Determine next action
     if (currentQuestionIndex < interview.generatedQuestions.length - 1) {
-      // Go to next question
       setCurrentQuestionIndex(prev => prev + 1);
-      setTimeLeft(60); // Reset timer for new question
-      isTransitioningRef.current = false; // Reset ref for next question
+      setTimeLeft(60);
+      isTransitioningRef.current = false;
     } else {
-      // Submit interview if it's the last question
       await submitInterviewForEvaluation();
-      isTransitioningRef.current = false; // Reset ref
+      isTransitioningRef.current = false;
     }
   };
-
 
   // --- Effect to update userAnswer and clear recorded audio when currentQuestionIndex changes ---
   useEffect(() => {
     if (interview && interview.generatedQuestions[currentQuestionIndex]) {
       setUserAnswer(interview.generatedQuestions[currentQuestionIndex].userAnswer || '');
       setRecordedAudioBlob(null);
-      setTimeLeft(60); // Reset timer for new question
-      isTransitioningRef.current = false; // Reset ref when question changes
+      setTimeLeft(60);
+      isTransitioningRef.current = false;
     }
   }, [currentQuestionIndex, interview]);
 
@@ -237,7 +239,7 @@ const InterviewComponent = ({ interviewSessionId, onInterviewComplete }) => {
   };
 
   const goToNextQuestion = async () => {
-    if (isTransitioningRef.current) return; // Prevent manual advance during auto-transition
+    if (isTransitioningRef.current) return;
     await saveCurrentAnswer();
     if (currentQuestionIndex < interview.generatedQuestions.length - 1) {
       setCurrentQuestionIndex(prev => prev + 1);
@@ -248,7 +250,7 @@ const InterviewComponent = ({ interviewSessionId, onInterviewComplete }) => {
   };
 
   const goToPreviousQuestion = async () => {
-    if (isTransitioningRef.current) return; // Prevent manual back during auto-transition
+    if (isTransitioningRef.current) return;
     await saveCurrentAnswer();
     if (currentQuestionIndex > 0) {
       setCurrentQuestionIndex(prev => prev - 1);
@@ -257,9 +259,14 @@ const InterviewComponent = ({ interviewSessionId, onInterviewComplete }) => {
   };
 
   const submitInterviewForEvaluation = async () => {
-    if (isTransitioningRef.current) return; // Prevent manual submit during auto-transition
     setIsSubmitting(true);
     await saveCurrentAnswer();
+    
+    // --- NEW: Explicitly stop media stream before unmounting ---
+    console.log("DEBUG: Submitting interview. Calling stopMediaStream explicitly.");
+    stopMediaStream(); 
+    // --- END NEW ---
+
     try {
       await axios.put(`http://localhost:5000/api/interview/${interviewSessionId}/complete-and-evaluate`);
       alert('Interview submitted for evaluation! Redirecting to feedback...');
@@ -279,14 +286,12 @@ const InterviewComponent = ({ interviewSessionId, onInterviewComplete }) => {
   const currentQuestion = interview.generatedQuestions[currentQuestionIndex];
   const totalQuestions = interview.generatedQuestions.length;
 
-  // Function to format time for display
   const formatTime = (seconds) => {
     const minutes = Math.floor(seconds / 60);
     const remainingSeconds = seconds % 60;
     return `${minutes.toString().padStart(2, '0')}:${remainingSeconds.toString().padStart(2, '0')}`;
   };
 
-  // Disable controls when time is up or transitioning automatically
   const disableControls = isSubmitting || isRecording || timeLeft <= 0 || isTransitioningRef.current;
 
   return (
@@ -302,7 +307,7 @@ const InterviewComponent = ({ interviewSessionId, onInterviewComplete }) => {
         marginBottom: '25px',
         fontSize: '1.8em',
         fontWeight: 'bold',
-        color: timeLeft <= 10 && timeLeft > 0 ? '#dc3545' : '#2196f3', // Red when time is low, but not 0
+        color: timeLeft <= 10 && timeLeft > 0 ? '#dc3545' : '#2196f3',
         padding: '10px 0',
         borderBottom: '1px solid #eee'
       }}>
@@ -328,7 +333,7 @@ const InterviewComponent = ({ interviewSessionId, onInterviewComplete }) => {
         <div style={{ marginTop: '15px', display: 'flex', gap: '15px' }}>
           <button
             onClick={startRecording}
-            disabled={disableControls || isRecording} // disable if time is 0 or transitioning
+            disabled={disableControls || isRecording}
             style={{
               padding: '10px 20px',
               backgroundColor: isRecording ? '#ccc' : '#dc3545',
@@ -375,7 +380,7 @@ const InterviewComponent = ({ interviewSessionId, onInterviewComplete }) => {
           onChange={handleAnswerChange}
           placeholder="Type your answer here (or just record audio)..."
           rows="8"
-          disabled={disableControls} // Disable textarea if time is up
+          disabled={disableControls}
           style={{
             width: '100%',
             padding: '10px',
