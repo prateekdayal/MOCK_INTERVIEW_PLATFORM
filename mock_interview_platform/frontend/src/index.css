@@ -1,68 +1,120 @@
-:root {
-  font-family: system-ui, Avenir, Helvetica, Arial, sans-serif;
-  line-height: 1.5;
-  font-weight: 400;
+/* frontend/src/index.css */
 
-  color-scheme: light dark;
-  color: rgba(255, 255, 255, 0.87);
-  background-color: #242424;
-
-  font-synthesis: none;
-  text-rendering: optimizeLegibility;
-  -webkit-font-smoothing: antialiased;
-  -moz-osx-font-smoothing: grayscale;
-}
-
-a {
-  font-weight: 500;
-  color: #646cff;
-  text-decoration: inherit;
-}
-a:hover {
-  color: #535bf2;
-}
-
-body {
+/* Basic reset and ensure HTML/body take full viewport */
+html, body, #root {
   margin: 0;
+  padding: 0;
+  height: 100%; /* Make sure they take full viewport height */
+  width: 100%;  /* Make sure they take full viewport width */
+  overflow-x: hidden; /* Prevent horizontal scrollbars from appearing */
+  box-sizing: border-box; /* Include padding and border in the element's total width and height */
+  font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; /* A modern default font */
+  color: #333; /* A default dark text color */
+  background-color: #f4f7f6; /* A light background for the entire app */
+  line-height: 1.6;
+}
+
+/* Optional: Basic styling for the main app container if needed */
+.App {
+  min-height: 100vh; /* Ensure the React app container takes at least full viewport height */
   display: flex;
-  place-items: center;
-  min-width: 320px;
-  min-height: 100vh;
+  flex-direction: column;
+  align-items: center; /* Center content horizontally within App */
+  padding: 20px; /* Add some padding around the main content area */
+  box-sizing: border-box;
 }
 
-h1 {
-  font-size: 3.2em;
-  line-height: 1.1;
+/* Adjust the main content container within App.jsx */
+.main-content-container { /* This class is added to your outer div in App.jsx */
+    background-color: #fff; /* White background for the main card-like content */
+    border-radius: 10px; /* Rounded corners */
+    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.1); /* Subtle shadow */
+    padding: 30px;
+    max-width: 800px; /* Keep your content width constraint */
+    width: 100%; /* Ensure it uses max-width effectively */
+    margin: 0 auto; /* Center it */
+    min-height: 80vh; /* Ensure it has some minimum height, can adjust as needed */
+    box-sizing: border-box;
 }
 
+/* Basic button styling (can be expanded) */
 button {
-  border-radius: 8px;
-  border: 1px solid transparent;
-  padding: 0.6em 1.2em;
-  font-size: 1em;
-  font-weight: 500;
-  font-family: inherit;
-  background-color: #1a1a1a;
+  transition: background-color 0.2s ease, transform 0.1s ease;
+  padding: 10px 15px;
+  border-radius: 5px;
+  font-size: 0.95em;
   cursor: pointer;
-  transition: border-color 0.25s;
-}
-button:hover {
-  border-color: #646cff;
-}
-button:focus,
-button:focus-visible {
-  outline: 4px auto -webkit-focus-ring-color;
+  border: none;
+  font-weight: 600;
 }
 
-@media (prefers-color-scheme: light) {
-  :root {
-    color: #213547;
-    background-color: #ffffff;
-  }
-  a:hover {
-    color: #747bff;
-  }
-  button {
-    background-color: #f9f9f9;
-  }
+button:hover:not(:disabled) {
+  opacity: 0.9;
+  transform: translateY(-1px);
+}
+
+button:active:not(:disabled) {
+  transform: translateY(0);
+}
+
+button:disabled {
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+/* Specific color adjustments for consistency */
+button[style*="background-color: rgb(33, 150, 243)"],
+button[style*="background-color: #2196f3"] { /* Blue buttons */
+  background-color: #2196f3 !important;
+}
+button[style*="background-color: rgb(76, 175, 80)"],
+button[style*="background-color: #4caf50"] { /* Green buttons */
+  background-color: #4caf50 !important;
+}
+button[style*="background-color: rgb(108, 117, 125)"],
+button[style*="background-color: #6c757d"] { /* Grey buttons */
+  background-color: #6c757d !important;
+}
+button[style*="background-color: rgb(0, 123, 255)"],
+button[style*="background-color: #007bff"] { /* Primary blue buttons */
+  background-color: #007bff !important;
+}
+button[style*="background-color: rgb(220, 53, 69)"],
+button[style*="background-color: #dc3545"] { /* Red buttons */
+  background-color: #dc3545 !important;
+}
+button[style*="background-color: rgb(165, 214, 167)"],
+button[style*="background-color: #a5d6a7"] { /* Light green disabled for loading */
+    background-color: #a5d6a7 !important;
+}
+
+
+/* Basic input styling */
+input[type="text"],
+input[type="email"],
+input[type="password"],
+input[type="date"],
+textarea {
+  padding: 10px;
+  border: 1px solid #ddd;
+  border-radius: 5px;
+  font-size: 1em;
+  width: calc(100% - 22px); /* Account for padding/border */
+  box-sizing: border-box;
+}
+
+input:focus,
+textarea:focus {
+  outline: none;
+  border-color: #2196f3;
+  box-shadow: 0 0 0 2px rgba(33, 150, 243, 0.2);
+}
+
+/* Additional utility classes for centering or spacing if needed */
+.text-center {
+  text-align: center;
+}
+
+.mb-20 {
+  margin-bottom: 20px;
 }
