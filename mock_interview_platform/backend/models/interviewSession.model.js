@@ -5,20 +5,17 @@ const questionSchema = new mongoose.Schema({
   questionText: { type: String, required: true },
   questionType: { type: String, enum: ['behavioral', 'technical', 'situational', 'general'], default: 'general' },
   userAnswer: { type: String, default: '' },
-  userAudioUrl: { type: String },
+  userAudioUrl: { type: String }, // Placeholder URL for now, GCS later
   userAudioTranscription: { type: String, default: '' },
   aiFeedbackSummary: { type: String, default: '' },
   aiStrengths: [{ type: String }],
   aiAreasForImprovement: [{ type: String }],
-  // --- NEW: Category Scores ---
   aiCategoryScores: {
     technical: { type: Number, min: 0, max: 10, default: 0 },
     behavioral: { type: Number, min: 0, max: 10, default: 0 },
     softSkills: { type: Number, min: 0, max: 10, default: 0 },
-    // You can add more categories like 'clarity', 'relevance', 'speech_delivery' if your prompt asks for them
   },
-  // --- END NEW ---
-  aiScore: { type: Number, min: 0, max: 10, default: 0 }, // This is the overall score for the question
+  aiScore: { type: Number, min: 0, max: 10, default: 0 },
   isAnswered: { type: Boolean, default: false },
   timestamp: { type: Date, default: Date.now }
 });
@@ -39,5 +36,9 @@ const interviewSessionSchema = new mongoose.Schema({
   endTime: { type: Date },
 }, { timestamps: true });
 
-const InterviewSession = mongoose.model('InterviewSession', interviewSessionSchema);
+// --- CRITICAL CHANGE HERE ---
+// This prevents Mongoose from trying to recompile the model if it already exists
+const InterviewSession = mongoose.models.InterviewSession || mongoose.model('InterviewSession', interviewSessionSchema);
+// --- END CRITICAL CHANGE ---
+
 export default InterviewSession;

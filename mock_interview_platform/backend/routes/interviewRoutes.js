@@ -7,17 +7,26 @@ import Job from '../models/job.Model.js';
 import Skill from '../models/skill.model.js';
 import multer from 'multer';
 import protect from '../middleware/auth.js';
+import fs from "fs/promises";
+import path from "path";
+import mongoose from 'mongoose';
+
+
+import { fileURLToPath } from 'url';
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+
 
 const router = Router();
 
-const uploadAudio = multer({ storage: multer.memoryStorage() });
+const uploadMedia = multer({ storage: multer.memoryStorage() });
 
 const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY);
 const model = genAI.getGenerativeModel({ model: "gemini-2.0-flash" });
 
 const speechClient = new SpeechClient();
 
-// Helper function to generate questions (no changes needed here)
+// Helper function to generate questions
 async function generateInterviewQuestions(interviewData) {
   const { selectedJobs, selectedSkills, resumeText } = interviewData;
 
@@ -62,7 +71,7 @@ async function generateInterviewQuestions(interviewData) {
   }
 }
 
-// POST endpoint to start a new interview session (no changes needed here)
+// POST endpoint to start a new interview session
 router.post('/start', protect, async (req, res) => {
   const { selectedJobs, selectedSkills, resumeText } = req.body;
   const userId = req.user.id;
@@ -102,227 +111,208 @@ router.post('/start', protect, async (req, res) => {
   }
 });
 
-// GET endpoint to retrieve a specific interview session (no changes needed here)
+// GET endpoint to retrieve a specific interview session
 router.get('/:id', protect, async (req, res) => {
+  console.log("\n--- DEBUG: GET /api/interview/:id route hit ---");
+  const { id } = req.params;
+  const userId = req.user.id; // From protect middleware
+
+  console.log("DEBUG: Fetching interview for ID:", id);
+  console.log("DEBUG: Authenticated User ID:", userId);
+
   try {
-    const interview = await InterviewSession.findById(req.params.id)
+    const interview = await InterviewSession.findById(id).lean() // Use .lean() to get a plain JS object
       .populate('selectedJobs', 'title')
       .populate('selectedSkills', 'name category');
 
     if (!interview) {
+      console.warn("DEBUG: Interview session not found in DB for ID:", id);
       return res.status(404).json({ message: 'Interview session not found.' });
     }
 
-    if (interview.userId.toString() !== req.user.id) {
+    console.log("DEBUG: Interview found. User ID in DB:", interview.userId.toString());
+    if (interview.userId.toString() !== userId) {
+        console.warn("DEBUG: User ID mismatch. Not authorized.");
         return res.status(403).json({ message: 'Not authorized to view this interview session.' });
     }
+    
+    console.log("DEBUG: Interview object being sent to frontend (relevant media fields):");
+    interview.generatedQuestions.forEach((q, idx) => {
+        console.log(`  Q${idx + 1}: userAudioUrl: ${q.userAudioUrl ? q.userAudioUrl.substring(0,50) + '...' : 'N/A'}, Transcription: ${q.userAudioTranscription ? q.userAudioTranscription.substring(0,50) + '...' : 'N/A'}, isAnswered: ${q.isAnswered}`);
+    });
 
+    console.log("DEBUG: Interview successfully fetched and authorized.");
     res.status(200).json(interview);
   } catch (error) {
-    console.error('Error fetching interview session:', error);
-    res.status(500).json({ message: 'Server Error', error: error.message });
+    console.error('❌ DEBUG: Error fetching interview session in catch block:', error);
+    res.status(500).json({ message: 'Server Error fetching interview session.', error: error.message });
+  } finally {
+      console.log("--- DEBUG: GET /api/interview/:id route finished ---");
   }
 });
 
-// PUT endpoint to save an answer for a specific question (no changes needed here)
-router.put('/:id/answer', protect, uploadAudio.single('audioFile'), async (req, res) => {
-  const { id } = req.params;
-  const { userAnswer, isAnswered, questionId } = req.body;
-  const audioFile = req.file;
+// UPDATED: PUT endpoint to save an answer for a specific question - CRITICAL Mongoose Atomic Array Update
+router.put('/:id/answer', protect, uploadMedia.single('mediaFile'), async (req, res) => {
+  console.log("\n--- DEBUG: PUT /api/interview/:id/answer route hit ---");
+  const { id: interviewId } = req.params;
+  const { userAnswer, questionId } = req.body;
+  const mediaFile = req.file;
   let userAudioTranscription = '';
   let userAudioUrl = null;
 
-  try {
-    const interview = await InterviewSession.findById(id);
+  console.log("DEBUG: Request Body:", { userAnswer, questionId });
+  console.log("DEBUG: req.file (mediaFile) status:", mediaFile ? `Present, MimeType: ${mediaFile.mimetype}, Size: ${mediaFile.size}` : "Undefined/Not Uploaded");
 
+  try {
+    const interview = await InterviewSession.findById(interviewId); 
     if (!interview) {
+      console.warn("DEBUG: Interview session not found for ID:", interviewId);
       return res.status(404).json({ message: 'Interview session not found.' });
     }
-
     if (interview.userId.toString() !== req.user.id) {
+        console.warn("DEBUG: User not authorized for interview ID:", interviewId);
         return res.status(403).json({ message: 'Not authorized to modify this interview session.' });
     }
-
-    const question = interview.generatedQuestions.id(questionId);
-    if (!question) {
+    const questionIndex = interview.generatedQuestions.findIndex(q => q._id.toString() === questionId);
+    if (questionIndex === -1) {
+      console.warn("DEBUG: Question not found for ID:", questionId, "in interview.");
       return res.status(404).json({ message: 'Question not found in this interview session.' });
     }
 
-    if (audioFile && audioFile.buffer) {
-        console.log(`Received audio file: ${audioFile.originalname}, Size: ${audioFile.size} bytes`);
-        userAudioUrl = `temp_url_for_audio_${questionId}.webm`;
+    // --- Media File Processing & Speech-to-Text Transcription ---
+    if (mediaFile && mediaFile.buffer && (mediaFile.mimetype.startsWith('audio') || mediaFile.mimetype.startsWith('video'))) {
+        console.log(`DEBUG: Proceeding with media file processing and STT.`);
+        console.log(`DEBUG: Detected MimeType: ${mediaFile.mimetype}`);
+        
+        // --- CRITICAL: LOCAL FILE STORAGE AND STATIC URL GENERATION ---
+        const uploadsBaseDir = path.join(__dirname, '../uploads'); // Path to /backend/uploads
+        await fs.mkdir(uploadsBaseDir, { recursive: true }); // Ensure directory exists
 
-        const audio = { content: audioFile.buffer.toString('base64'), };
+        const fileName = `${interviewId}_${questionId}_${Date.now()}.${mediaFile.mimetype.split('/')[1].split(';')[0].replace(/[^a-z0-9]/gi, '_')}`; // Sanitize filename
+        const filePath = path.join(uploadsBaseDir, fileName);
+
+        await fs.writeFile(filePath, mediaFile.buffer); // Save the file to disk
+        userAudioUrl = `/uploads/${fileName}`; // This is the static URL path
+        console.log(`✅ Media file saved locally to: ${filePath}`);
+        console.log(`DEBUG: Static userAudioUrl set: ${userAudioUrl}`);
+        // --- END CRITICAL LOCAL FILE STORAGE ---
+
+        const audio = {
+            content: mediaFile.buffer.toString('base64'),
+        };
+        
+        // --- Refined STT Configuration based on MimeType ---
+        let encoding;
+        let sampleRateHertz = 48000; 
+        
+        if (mediaFile.mimetype.includes('webm') && mediaFile.mimetype.includes('opus')) {
+            encoding = 'WEBM_OPUS';
+            console.log("DEBUG: STT Config: Using WEBM_OPUS for WebM/Opus.");
+        } else if (mediaFile.mimetype.includes('webm')) {
+            encoding = 'WEBM_OPUS'; 
+            console.log("DEBUG: STT Config: Using WEBM_OPUS for generic WebM.");
+        } else if (mediaFile.mimetype.includes('mp4')) {
+            encoding = 'MP4_AUDIO'; 
+            sampleRateHertz = 48000; // Common sample rate for AAC in MP4
+            console.warn("DEBUG: Media is MP4. Attempting MP4_AUDIO encoding. This might require specific client-side MP4 audio encoding or FFmpeg pre-processing.");
+        } else if (mediaFile.mimetype.includes('ogg')) {
+            encoding = 'OGG_OPUS';
+            sampleRateHertz = 48000;
+            console.log("DEBUG: STT Config: Using OGG_OPUS for Ogg.");
+        } else if (mediaFile.mimetype.startsWith('audio/')) {
+             encoding = 'ENCODING_UNSPECIFIED';
+             sampleRateHertz = 0;
+             console.warn("DEBUG: Generic audio type detected. Using ENCODING_UNSPECIFIED.");
+        } else {
+            encoding = 'ENCODING_UNSPECIFIED';
+            sampleRateHertz = 0;
+            console.warn("DEBUG: Fallback for unknown media MIME type. Using ENCODING_UNSPECIFIED. This may cause STT issues.");
+        }
+
         const config = {
-            encoding: 'WEBM_OPUS',
-            sampleRateHertz: 48000,
+            encoding: encoding,
+            sampleRateHertz: sampleRateHertz,
             languageCode: 'en-US',
             model: 'latest_long',
+            enableAutomaticPunctuation: true,
         };
+        if (mediaFile.mimetype.startsWith('video')) {
+            config.enableWordTimeOffsets = false;
+            console.log("DEBUG: Media is video, adjusting STT config (enableWordTimeOffsets=false).");
+        }
+        console.log("DEBUG: Final STT Config sent to Google:", JSON.stringify(config));
+
+
         const request = { audio: audio, config: config, };
 
         try {
+            console.log("DEBUG: Attempting Google Speech-to-Text transcription.");
             const [response] = await speechClient.recognize(request);
             const transcription = response.results
                 .map(result => result.alternatives[0].transcript)
                 .join('\n');
             userAudioTranscription = transcription;
-            console.log('Audio Transcription:', transcription);
+            console.log('✅ Audio Transcription:', transcription);
         } catch (sttError) {
-            console.error('Google STT Error:', sttError);
+            console.error('❌ Google STT Error during transcription:', sttError);
             userAudioTranscription = `Transcription failed: ${sttError.message}`;
+            console.error('DEBUG: Failed STT for MimeType:', mediaFile.mimetype, 'with config:', JSON.stringify(config));
         }
+    } else {
+        console.log("DEBUG: No valid media file uploaded for STT (or it's not an audio/video type), skipping transcription.");
+        userAudioUrl = null;
+        userAudioTranscription = '';
     }
 
-    question.userAnswer = userAnswer || '';
-    question.isAnswered = isAnswered === 'true';
-    question.userAudioUrl = userAudioUrl;
-    question.userAudioTranscription = userAudioTranscription;
+    const newIsAnswered = (!!userAnswer && userAnswer.trim().length > 0) || (!!userAudioTranscription && userAudioTranscription.trim().length > 0);
+    
+    // --- CRITICAL FIX: Use findOneAndUpdate with positional operator ---
+    const updateQuery = { _id: interviewId, "generatedQuestions._id": questionId };
+    const updateOperation = {
+        $set: { // Use $set to update specific fields within the array element
+            "generatedQuestions.$.userAnswer": userAnswer || '',
+            "generatedQuestions.$.userAudioUrl": userAudioUrl,
+            "generatedQuestions.$.userAudioTranscription": userAudioTranscription,
+            "generatedQuestions.$.isAnswered": newIsAnswered,
+        },
+    };
 
-    await interview.save();
-    res.status(200).json({ message: 'Answer saved successfully!', question });
+    const updatedInterview = await InterviewSession.findOneAndUpdate(
+        updateQuery,
+        updateOperation,
+        { new: true, runValidators: true } // Return the updated document and run validators
+    ).lean(); // Removed .lean() to work with the Mongoose document structure if needed for markModified
 
-  } catch (error) {
-    console.error('Error saving answer:', error);
-    res.status(500).json({ message: 'Server Error', error: error.message });
-  }
-});
-
-// UPDATED: PUT endpoint to mark interview as completed AND trigger evaluation with category scores
-router.put('/:id/complete-and-evaluate', protect, async (req, res) => {
-  const { id } = req.params;
-
-  try {
-    const interview = await InterviewSession.findById(id)
-      .populate('selectedJobs', 'title')
-      .populate('selectedSkills', 'name');
-
-    if (!interview) {
-      return res.status(404).json({ message: 'Interview session not found.' });
+    // Check if the update was successful
+    if (!updatedInterview) {
+        console.error("DEBUG: findOneAndUpdate returned null, interview or question not found for update (or failed).");
+        return res.status(404).json({ message: "Failed to update interview session or question in DB." });
     }
-
-    if (interview.userId.toString() !== req.user.id) {
-        return res.status(403).json({ message: 'Not authorized to evaluate this interview session.' });
+    
+    // --- NEW CRITICAL DEBUG: IMMEDIATELY RE-FETCH FROM DB TO VERIFY PERSISTENCE ---
+    const finalInterviewDoc = await InterviewSession.findById(interviewId).lean();
+    if (!finalInterviewDoc) {
+        console.error("DEBUG: CRITICAL: Could not re-fetch interview after update for final logging.");
+        return res.status(500).json({ message: "Failed to retrieve updated interview for verification." });
     }
+    const updatedQuestion = finalInterviewDoc.generatedQuestions.find(q => q._id.toString() === questionId);
 
-    if (interview.status === 'evaluated') {
-      return res.status(200).json({ message: 'Interview already evaluated.', interviewId: interview._id, status: interview.status });
-    }
-
-    if (interview.status !== 'completed') {
-      interview.status = 'completed';
-      interview.endTime = new Date();
-    }
-
-    let totalScore = 0;
-    let questionsEvaluatedCount = 0;
-    const evaluatedQuestions = [];
-
-    for (const question of interview.generatedQuestions) {
-      if (!question.isAnswered || (!question.userAnswer && !question.userAudioTranscription)) {
-        evaluatedQuestions.push(question);
-        continue;
-      }
-
-      const answerContent = question.userAudioTranscription || question.userAnswer;
-
-      // --- UPDATED EVALUATION PROMPT for CATEGORY SCORES ---
-      let evaluationPrompt = `You are an AI interview grader. The candidate applied for role(s): "${interview.selectedJobs.map(j => j.title).join(', ')}", and was assessed on skills: "${interview.selectedSkills.map(s => s.name).join(', ')}".`;
-      if (interview.resumeText) {
-          evaluationPrompt += ` Their resume snippet: "${interview.resumeText.substring(0, Math.min(interview.resumeText.length, 1000))}".`;
-      }
-      evaluationPrompt += `\n\nEvaluate the following answer to the question:\nQuestion: "${question.questionText}"\nCandidate's Answer: "${answerContent}"\n\n`;
-      evaluationPrompt += `Provide a concise overall feedback summary (2-3 sentences). Then, list 2-3 specific strengths of the answer. Finally, list 2-3 specific areas for improvement. Give a numerical score from 1 (poor) to 10 (excellent) for this specific answer. Also provide a separate score (1-10) for "Technical Relevance", "Behavioral Aspects", and "Communication Clarity".\n`;
-      evaluationPrompt += `Format your response strictly as follows:\n`;
-      evaluationPrompt += `Summary: [Your feedback summary]\n`;
-      evaluationPrompt += `Strengths: - [Strength 1]\n- [Strength 2]\n...\n`;
-      evaluationPrompt += `Areas for Improvement: - [Improvement 1]\n- [Improvement 2]\n...\n`;
-      evaluationPrompt += `Score: [Numerical score (1-10)]\n`;
-      evaluationPrompt += `Technical Relevance: [Score 1-10]\n`;
-      evaluationPrompt += `Behavioral Aspects: [Score 1-10]\n`;
-      evaluationPrompt += `Communication Clarity: [Score 1-10]`;
-      // --- END UPDATED PROMPT ---
-
-      console.log(`\nDEBUG: Evaluation Prompt for QID ${question._id} (truncated):`, evaluationPrompt.substring(0, 300) + '...');
-
-      try {
-        const result = await model.generateContent(evaluationPrompt);
-        const response = await result.response;
-        const evaluationResponseContent = response.text();
-
-        console.log(`DEBUG: Gemini Evaluation Response for QID ${question._id}:\n`, evaluationResponseContent);
-
-        // --- UPDATED PARSING LOGIC for CATEGORY SCORES ---
-        const summaryMatch = evaluationResponseContent.match(/Summary:\s*(.*?)(\n|$)/i);
-        const strengthsMatch = evaluationResponseContent.match(/Strengths:\s*(-.*?)(?:\nAreas for Improvement:|- Score:|$)/is);
-        const improvementsMatch = evaluationResponseContent.match(/Areas for Improvement:\s*(-.*?)(?:\nScore:|$)/is);
-        const scoreMatch = evaluationResponseContent.match(/Score:\s*(\d+)/i);
-        const techScoreMatch = evaluationResponseContent.match(/Technical Relevance:\s*(\d+)/i);
-        const behaviorScoreMatch = evaluationResponseContent.match(/Behavioral Aspects:\s*(\d+)/i);
-        const commScoreMatch = evaluationResponseContent.match(/Communication Clarity:\s*(\d+)/i);
-
-        question.aiFeedbackSummary = summaryMatch ? summaryMatch[1].trim() : "No summary feedback generated.";
-        question.aiStrengths = strengthsMatch ? strengthsMatch[1].split('\n').filter(s => s.trim().startsWith('-')).map(s => s.replace(/^-/, '').trim()) : [];
-        question.aiAreasForImprovement = improvementsMatch ? improvementsMatch[1].split('\n').filter(s => s.trim().startsWith('-')).map(s => s.replace(/^-/, '').trim()) : [];
-        question.aiScore = scoreMatch ? parseInt(scoreMatch[1], 10) : 0;
-        
-        // Populate new category scores
-        question.aiCategoryScores = {
-            technical: techScoreMatch ? parseInt(techScoreMatch[1], 10) : 0,
-            behavioral: behaviorScoreMatch ? parseInt(behaviorScoreMatch[1], 10) : 0,
-            softSkills: commScoreMatch ? parseInt(commScoreMatch[1], 10) : 0, // Using 'Communication Clarity' for softSkills
-        };
-        // --- END UPDATED PARSING ---
-
-        totalScore += question.aiScore;
-        questionsEvaluatedCount++;
-        evaluatedQuestions.push(question);
-
-      } catch (geminiError) {
-        console.error(`Error evaluating question ${question._id} with Gemini AI:`, geminiError);
-        question.aiFeedbackSummary = "Evaluation failed due to AI error.";
-        question.aiStrengths = [];
-        question.aiAreasForImprovement = [];
-        question.aiScore = 0;
-        question.aiCategoryScores = { technical: 0, behavioral: 0, softSkills: 0 };
-        evaluatedQuestions.push(question);
-      }
-    }
-
-    interview.generatedQuestions = evaluatedQuestions;
-    interview.overallScore = questionsEvaluatedCount > 0 ? (totalScore / questionsEvaluatedCount) : 0;
-    interview.status = 'evaluated';
-
-    await interview.save();
-
-    res.status(200).json({
-      message: 'Interview completed and evaluated!',
-      interviewId: interview._id,
-      overallScore: interview.overallScore,
-      status: interview.status
+    console.log("DEBUG: AFTER DB UPDATE (final verified) - Question object details:", {
+        _id: updatedQuestion._id,
+        userAudioUrl: updatedQuestion.userAudioUrl ? updatedQuestion.userAudioUrl.substring(0, 50) + '...' : 'N/A',
+        userAudioTranscription: updatedQuestion.userAudioTranscription ? updatedQuestion.userAudioTranscription.substring(0, 50) + '...' : 'N/A',
+        isAnswered: updatedQuestion.isAnswered,
+        userAnswer: updatedQuestion.userAnswer ? updatedQuestion.userAnswer.substring(0, 50) + '...' : 'N/A'
     });
+    // --- END CRITICAL FIX ---
+
+    res.status(200).json({ message: 'Answer saved successfully!', question: updatedQuestion });
 
   } catch (error) {
-    console.error('Error completing and evaluating interview:', error);
-    res.status(500).json({ message: 'Server Error', error: error.message });
+    console.error('❌ Error saving answer in catch block:', error);
+    res.status(500).json({ message: 'Server Error during answer saving.', error: error.message });
+  } finally {
+      console.log("--- DEBUG: PUT /api/interview/:id/answer route finished ---");
   }
 });
-
-// GET endpoint to retrieve all evaluated interview sessions for the logged-in user (no changes needed here)
-router.get('/', protect, async (req, res) => {
-  const userId = req.user.id;
-  try {
-    const interviews = await InterviewSession.find({ userId: userId, status: 'evaluated' })
-      .select('overallScore startTime selectedJobs selectedSkills')
-      .populate('selectedJobs', 'title')
-      .populate('selectedSkills', 'name')
-      .sort({ startTime: -1 });
-
-    res.status(200).json(interviews);
-  } catch (error) {
-    console.error('Error fetching all interview sessions:', error);
-    res.status(500).json({ message: 'Server Error', error: error.message });
-  }
-});
-
 export default router;

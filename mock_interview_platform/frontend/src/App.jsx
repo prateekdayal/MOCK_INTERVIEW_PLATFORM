@@ -1,19 +1,20 @@
 // frontend/src/App.jsx
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import JobSelection from './components/JobSelection';
 import SkillSelection from './pages/SkillSelection';
 import ResumeUpload from './pages/ResumeUpload';
 import InterviewComponent from './components/InterviewComponent';
-import FeedbackDashboard from './pages/FeedbackDashboard'; // Note: Ensure this path is correct if it moved to pages/
+import FeedbackDashboard from './pages/FeedbackDashboard';
 import PastInterviewsScreen from './pages/PastInterviewsScreen';
 import Login from './components/Auth/Login';
 import Register from './components/Auth/Register';
 import { AuthProvider, useAuth } from './context/AuthContext';
 import axios from 'axios';
+import { io } from 'socket.io-client'; // Socket.IO Client Import
 
 // AppComponent is the main functional component of your application's content
 function AppComponent() {
-  const { user, isAuthenticated, authLoading, login, logout } = useAuth();
+  const { user, isAuthenticated, authLoading, login, logout, token } = useAuth();
 
   const [currentStep, setCurrentStep] = useState(1);
   const [interviewData, setInterviewData] = useState({
@@ -25,6 +26,11 @@ function AppComponent() {
   const [loadingInterview, setLoadingInterview] = useState(false);
   const [showRegister, setShowRegister] = useState(false);
 
+  // --- Socket.IO state and ref ---
+  const socketRef = useRef(null); // Ref to hold the socket instance
+  const [socketConnected, setSocketConnected] = useState(false);
+  // --- END NEW ---
+
   // --- Effect to manage application flow based on authentication state ---
   useEffect(() => {
     if (authLoading) return;
@@ -35,12 +41,48 @@ function AppComponent() {
       }
       setInterviewData({ selectedJobs: [], selectedSkills: [], resumeText: '' });
       setInterviewSessionId(null);
+      if (socketRef.current) {
+        console.log("App: Disconnecting socket on unauthentication.");
+        socketRef.current.disconnect();
+        socketRef.current = null;
+        setSocketConnected(false);
+      }
     } else {
       if (currentStep === 'auth' || currentStep === 0) {
         setCurrentStep(1);
       }
+      // --- NEW: Connect socket on successful authentication ---
+      if (!socketRef.current && isAuthenticated && token) {
+        console.log("App: Authenticated. Attempting to connect Socket.IO.");
+        socketRef.current = io('http://localhost:5000', {
+          auth: {
+            token: token
+          },
+          transports: ['websocket']
+        });
+
+        socketRef.current.on('connect', () => {
+          console.log('App: Socket.IO connected.');
+          setSocketConnected(true);
+        });
+
+        socketRef.current.on('disconnect', () => {
+          console.log('App: Socket.IO disconnected.');
+          setSocketConnected(false);
+        });
+
+        socketRef.current.on('connect_error', (error) => {
+            console.error('App: Socket.IO connection error:', error.message);
+            if (error.message.includes('Authentication error')) {
+                alert('Socket authentication failed. Please log in again.');
+                logout();
+            }
+        });
+      }
+      // --- END NEW ---
     }
-  }, [isAuthenticated, authLoading, currentStep]);
+  }, [isAuthenticated, authLoading, currentStep, token, logout]);
+
 
   const handleJobsSelected = (jobIds) => {
     console.log('Jobs selected:', jobIds);
@@ -60,6 +102,7 @@ function AppComponent() {
     setCurrentStep(4);
   };
 
+  // Handler for starting a new interview session (Now uses Axios POST again)
   const startInterview = async () => {
     console.log('Attempting to start interview with:', interviewData);
     if (interviewData.selectedJobs.length === 0 || interviewData.selectedSkills.length === 0) {
@@ -69,17 +112,19 @@ function AppComponent() {
 
     setLoadingInterview(true);
     try {
+      // --- CRITICAL FIX: Reverting to Axios POST for startInterview ---
       const response = await axios.post('http://localhost:5000/api/interview/start', {
         selectedJobs: interviewData.selectedJobs,
         selectedSkills: interviewData.selectedSkills,
         resumeText: interviewData.resumeText
       });
 
-      console.log('Interview session created:', response.data.interviewId);
+      console.log('App: Interview session created (Axios POST):', response.data.interviewId); // Updated log
       setInterviewSessionId(response.data.interviewId);
       setCurrentStep(5);
+      // --- END CRITICAL FIX ---
     } catch (error) {
-      console.error('Error starting interview session:', error.response ? error.response.data : error.message);
+      console.error('App: Error starting interview session (Axios POST):', error.response ? error.response.data : error.message); // Updated log
       if (error.response && error.response.status === 401) {
           alert('Your session has expired or is invalid. Please log in again.');
           logout();
@@ -91,23 +136,25 @@ function AppComponent() {
     }
   };
 
-  const handleInterviewComplete = async (completedInterviewId) => {
-    console.log('Interview completed, triggering evaluation:', completedInterviewId);
-    try {
-      const response = await axios.put(`http://localhost:5000/api/interview/${completedInterviewId}/complete-and-evaluate`);
-      console.log('Evaluation response:', response.data);
-      alert('Interview submitted for evaluation! Check feedback dashboard.');
-      setInterviewSessionId(completedInterviewId);
-      setCurrentStep(6);
-    } catch (error) {
-      console.error('Error triggering evaluation:', error.response ? error.response.data : error.message);
-       if (error.response && error.response.status === 401) {
-          alert('Your session has expired. Please log in again.');
-          logout();
-      } else {
-          alert('Failed to evaluate interview: ' + (error.response?.data?.message || error.message));
-      }
+  // Handler for when the interview is completed and evaluation is triggered (Still uses Socket.IO)
+  const handleInterviewComplete = (completedInterviewId) => {
+    console.log('App: Interview completed, triggering evaluation (Socket):', completedInterviewId);
+    if (!socketRef.current || !socketConnected) {
+        alert('Socket.IO is not connected. Cannot trigger evaluation.');
+        return;
     }
+
+    socketRef.current.emit('completeAndEvaluate', completedInterviewId, (response) => {
+        if (response.status === 200) {
+            console.log('App: Evaluation response (Socket):', response.message);
+            alert('Interview submitted for evaluation! Check feedback dashboard.');
+            setInterviewSessionId(completedInterviewId);
+            setCurrentStep(6);
+        } else {
+            console.error('App: Error triggering evaluation (Socket):', response.message);
+            alert('Failed to evaluate interview: ' + response.message);
+        }
+    });
   };
 
   const handleRetakeInterview = () => {
@@ -126,11 +173,11 @@ function AppComponent() {
     setCurrentStep(6);
   };
 
-  // --- Conditional rendering for authentication state (before rendering main app) ---
+  // --- Conditional rendering for authentication state ---
   if (authLoading) {
     return (
-      <div className="App"> {/* Outermost wrapper, styled by index.css */}
-        <div className="main-content-container"> {/* Inner content wrapper, styled by index.css */}
+      <div className="App">
+        <div className="main-content-container">
           <div style={{ textAlign: 'center', padding: '50px', fontSize: '1.2em' }}>Loading authentication...</div>
         </div>
       </div>
@@ -139,15 +186,14 @@ function AppComponent() {
 
   if (!isAuthenticated) {
     return (
-      <div className="App"> {/* Outermost wrapper */}
-        <div className="main-content-container"> {/* Inner content wrapper */}
+      <div className="App">
+        <div className="main-content-container">
           <h1 style={{ textAlign: 'center', marginBottom: '40px', color: '#2196f3' }}>AI Mock Interview Platform</h1>
           {showRegister ? (
             <Register
               onRegisterSuccess={(userData, token) => {
                 login(userData, token);
                 setShowRegister(false);
-                setCurrentStep(1);
               }}
               onSwitchToLogin={() => setShowRegister(false)}
             />
@@ -155,7 +201,6 @@ function AppComponent() {
             <Login
               onLoginSuccess={(userData, token) => {
                 login(userData, token);
-                setCurrentStep(1);
               }}
               onSwitchToRegister={() => setShowRegister(true)}
             />
@@ -167,8 +212,8 @@ function AppComponent() {
 
   // --- Main Application Content (if isAuthenticated is true) ---
   return (
-    <div className="App"> {/* Outermost wrapper */}
-      <div className="main-content-container"> {/* Inner content wrapper */}
+    <div className="App">
+      <div className="main-content-container">
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '30px' }}>
           <h1>AI Mock Interview Platform</h1>
           {isAuthenticated && user && (
@@ -233,7 +278,7 @@ function AppComponent() {
             </div>
             <button 
               onClick={startInterview}
-              disabled={loadingInterview}
+              disabled={loadingInterview} // Socket.IO connection is handled implicitly by AuthProvider/useEffect
               style={{ 
                 padding: '15px 30px',
                 backgroundColor: loadingInterview ? '#a5d6a7' : '#4caf50',
@@ -251,10 +296,11 @@ function AppComponent() {
           </div>
         )}
 
-        {currentStep === 5 && interviewSessionId && (
+        {currentStep === 5 && interviewSessionId && socketRef.current && (
           <InterviewComponent 
             interviewSessionId={interviewSessionId} 
             onInterviewComplete={handleInterviewComplete} 
+            socket={socketRef.current} // Pass socket instance
           />
         )}
         {currentStep === 5 && !interviewSessionId && !loadingInterview && (
@@ -311,8 +357,8 @@ function AppComponent() {
             ← Home
           </button>
         )}
-      </div> {/* End main-content-container */}
-    </div> // End App
+      </div>
+    </div>
   );
 }
 

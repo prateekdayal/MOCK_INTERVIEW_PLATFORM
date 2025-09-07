@@ -2,9 +2,10 @@
 import mongoose from 'mongoose';
 
 const jobSchema = new mongoose.Schema({
-    title: { type: String, required: true, unique: true },
+    title: { type: String, required: true, unique: true }, // Ensure unique:true is here
     description: { type: String, required: true },
 }, { timestamps: true });
 
-const Job = mongoose.model('Job', jobSchema);
+// Prevent Mongoose from trying to recompile the model if it already exists
+const Job = mongoose.models.Job || mongoose.model('Job', jobSchema); // <<< Safety check for model overwrite
 export default Job;

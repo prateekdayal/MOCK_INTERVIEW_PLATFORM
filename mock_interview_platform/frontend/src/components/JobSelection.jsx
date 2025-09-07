@@ -1,6 +1,6 @@
 // frontend/src/components/JobSelection.jsx
 import React, { useState, useEffect } from 'react';
-import axios from 'axios'; // Make sure you have axios installed: npm install axios
+import axios from 'axios';
 
 export default function JobSelection({ onNext }) {
   const [jobs, setJobs] = useState([]);
@@ -12,7 +12,8 @@ export default function JobSelection({ onNext }) {
   useEffect(() => {
     const fetchJobs = async () => {
       try {
-        const response = await axios.get('http://localhost:5000/api/jobs'); // Adjust URL if your backend is different
+        const response = await axios.get('http://localhost:5000/api/jobs');
+        console.log("DEBUG: Fetched Jobs:", response.data); // Inspect fetched data
         setJobs(response.data);
       } catch (err) {
         console.error('Error fetching jobs:', err);
@@ -22,7 +23,7 @@ export default function JobSelection({ onNext }) {
       }
     };
     fetchJobs();
-  }, []); // Empty dependency array means this runs once on mount
+  }, []);
 
   const handleJobToggle = (jobId) => {
     setSelectedJobIds(prev =>
@@ -40,10 +41,15 @@ export default function JobSelection({ onNext }) {
     }
   };
 
-  const filteredJobs = jobs.filter(job =>
-    job.title.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    job.description.toLowerCase().includes(searchTerm.toLowerCase())
-  );
+  // --- UPDATED FILTERING LOGIC WITH NULL CHECKS ---
+  const filteredJobs = jobs.filter(job => {
+    const lowerCaseSearchTerm = searchTerm.toLowerCase();
+    const title = job.title ? job.title.toLowerCase() : ''; // Default to empty string if undefined/null
+    const description = job.description ? job.description.toLowerCase() : ''; // Default to empty string if undefined/null
+
+    return title.includes(lowerCaseSearchTerm) || description.includes(lowerCaseSearchTerm);
+  });
+  // --- END UPDATED FILTERING ---
 
   if (loading) {
     return <p style={{ textAlign: 'center' }}>Loading jobs...</p>;
@@ -93,7 +99,7 @@ export default function JobSelection({ onNext }) {
                     gap: '5px'
                   }}
                 >
-                  {selectedJob.title}
+                  {selectedJob.title || 'Unknown Job'} {/* Added fallback */}
                   <button
                     onClick={() => handleJobToggle(id)}
                     style={{
@@ -138,8 +144,8 @@ export default function JobSelection({ onNext }) {
                   minHeight: '120px'
                 }}
               >
-                <h3 style={{ margin: '0 0 10px 0', color: '#333', fontSize: '1.1em' }}>{job.title}</h3>
-                <p style={{ fontSize: '0.9em', color: '#555', flexGrow: 1 }}>{job.description.substring(0, 100)}{job.description.length > 100 ? '...' : ''}</p>
+                <h3 style={{ margin: '0 0 10px 0', color: '#333', fontSize: '1.1em' }}>{job.title || 'Untitled Job'}</h3> {/* Added fallback */}
+                <p style={{ fontSize: '0.9em', color: '#555', flexGrow: 1 }}>{(job.description || 'No description.').substring(0, 100)}{job.description && job.description.length > 100 ? '...' : ''}</p> {/* Added fallback */}
                 <div style={{ textAlign: 'right', marginTop: '10px' }}>
                   {selectedJobIds.includes(job._id) ? (
                     <span style={{ color: '#2196f3', fontWeight: 'bold' }}>Selected</span>
